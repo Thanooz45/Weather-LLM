@@ -50,19 +50,20 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- Retrieve Keys ---
-groq_api_key = st.secrets.get("GROQ_API_KEY")
-weather_api_key = st.secrets.get("WEATHER_API_KEY")
+# --- Retrieve Keys Safely ---
+groq_api_key = str(st.secrets.get("GROQ_API_KEY", "")).strip()
+weather_api_key = str(st.secrets.get("WEATHER_API_KEY", "")).strip()
 
 if not groq_api_key or not weather_api_key:
-    st.error("Missing credentials: Make sure `GROQ_API_KEY` and `WEATHER_API_KEY` are defined in Streamlit secrets.")
+    st.error("Missing credentials: Make sure `GROQ_API_KEY` and `WEATHER_API_KEY` are defined under Streamlit Settings > Secrets.")
     st.stop()
 
+# Initialize Groq Client
 client = Groq(api_key=groq_api_key)
 
 # --- Weather API Helper ---
 def get_weather(location: str):
-    url = f"http://api.openweathermap.org/data/2.5/weather?q={location}&units=metric&appid={weather_api_key}"
+    url = f"https://api.openweathermap.org/data/2.5/weather?q={location}&units=metric&appid={weather_api_key}"
     try:
         response = requests.get(url, timeout=10)
         data = response.json()
@@ -76,9 +77,9 @@ def get_weather(location: str):
                 "description": data["weather"][0]["description"].title()
             })
         else:
-            return json.dumps({"error": f"City '{location}' not found. Check the spelling."})
+            return json.dumps({"error": f"City '{location}' not found."})
     except Exception as e:
-        return json.dumps({"error": f"Network error: {str(e)}"})
+        return json.dumps({"error": f"Connection error: {str(e)}"})
 
 # --- Function Calling Tool Schema ---
 tools = [
@@ -92,7 +93,7 @@ tools = [
                 "properties": {
                     "location": {
                         "type": "string",
-                        "description": "The city or locality name (e.g., Tokyo, London, Bengaluru)"
+                        "description": "The city name (e.g. Hyderabad, London, Tokyo)"
                     }
                 },
                 "required": ["location"]
@@ -121,12 +122,13 @@ with st.sidebar:
 
     for suggestion in prompt_suggestions:
         if st.button(suggestion, use_container_width=True):
-            st.session_state.preset_prompt = suggestion
+            st.session_state.pending_prompt = suggestion
             st.rerun()
 
     st.markdown("---")
     if st.button("🗑️ Clear Conversation", use_container_width=True):
         st.session_state.messages = []
+        st.session_state.pending_prompt = None
         st.rerun()
 
 # --- Main Page Header ---
@@ -143,9 +145,8 @@ if "messages" not in st.session_state:
 
 # --- Render Chat History ---
 for msg in st.session_state.messages:
-    role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
-    content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
-    
+    role = msg.get("role")
+    content = msg.get("content")
     if role == "user" and content:
         with st.chat_message("user", avatar="👤"):
             st.markdown(content)
@@ -153,72 +154,78 @@ for msg in st.session_state.messages:
         with st.chat_message("assistant", avatar="🌤️"):
             st.markdown(content)
 
-# --- Handle Incoming Queries ---
-chat_val = st.chat_input("Ask about weather anywhere (e.g., 'Do I need an umbrella in Paris today?')")
-active_input = chat_val
+# --- Input Handling ---
+chat_input = st.chat_input("Ask about weather anywhere...")
+prompt_to_process = None
 
-# Trigger if preset was selected
-if "preset_prompt" in st.session_state and st.session_state.preset_prompt:
-    active_input = st.session_state.preset_prompt
-    st.session_state.preset_prompt = None
+if chat_input:
+    prompt_to_process = chat_input
+elif "pending_prompt" in st.session_state and st.session_state.pending_prompt:
+    prompt_to_process = st.session_state.pending_prompt
+    st.session_state.pending_prompt = None
 
-if active_input:
-    # 1. Record and display user prompt
-    st.session_state.messages.append({"role": "user", "content": active_input})
+if prompt_to_process:
+    st.session_state.messages.append({"role": "user", "content": prompt_to_process})
     with st.chat_message("user", avatar="👤"):
-        st.markdown(active_input)
+        st.markdown(prompt_to_process)
 
-    # 2. Query LLM
     with st.chat_message("assistant", avatar="🌤️"):
-        with st.spinner("Analyzing weather inquiry..."):
-            response = client.chat.completions.create(
-                messages=st.session_state.messages,
-                model=selected_model,
-                tools=tools,
-                tool_choice="auto"
-            )
-            response_message = response.choices[0].message
-
-            # 3. Tool execution branch
-            if response_message.tool_calls:
-                # Convert Pydantic model to dict for safe serialization
-                msg_dict = response_message.model_dump()
-                st.session_state.messages.append(msg_dict)
-
-                for tool_call in response_message.tool_calls:
-                    if tool_call.function.name == "get_weather":
-                        args = json.loads(tool_call.function.arguments)
-                        target_location = args.get("location")
-
-                        weather_raw = get_weather(target_location)
-                        weather_data = json.loads(weather_raw)
-
-                        # Render live stat metrics
-                        if "error" not in weather_data:
-                            cols = st.columns(4)
-                            cols[0].metric("📍 Location", weather_data["location"])
-                            cols[1].metric("🌡️ Temp", f"{weather_data['temperature']} °C", f"Feels like {weather_data['feels_like']}°C")
-                            cols[2].metric("💧 Humidity", f"{weather_data['humidity']}%")
-                            cols[3].metric("💨 Wind", f"{weather_data['wind_speed']} m/s")
-
-                        # Append tool response
-                        st.session_state.messages.append({
-                            "role": "tool",
-                            "tool_call_id": tool_call.id,
-                            "content": weather_raw
-                        })
-
-                # Follow-up generation for natural language response
-                second_response = client.chat.completions.create(
+        with st.spinner("Analyzing weather query..."):
+            try:
+                # First Completion Call
+                response = client.chat.completions.create(
                     messages=st.session_state.messages,
                     model=selected_model,
                     tools=tools,
                     tool_choice="auto"
                 )
-                final_answer = second_response.choices[0].message.content
-                st.markdown(final_answer)
-                st.session_state.messages.append({"role": "assistant", "content": final_answer})
+                response_message = response.choices[0].message
 
-            else:
-                st.markdown(response_message.content)
-                st.session_state.messages.append({"role": "assistant", "content": response_message.content})
+                # Handle Tool Execution
+                if response_message.tool_calls:
+                    tool_calls_dict = [tc.model_dump() for tc in response_message.tool_calls]
+                    
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": response_message.content or "",
+                        "tool_calls": tool_calls_dict
+                    })
+
+                    for tool_call in response_message.tool_calls:
+                        if tool_call.function.name == "get_weather":
+                            args = json.loads(tool_call.function.arguments)
+                            loc = args.get("location", "")
+                            weather_raw = get_weather(loc)
+                            weather_data = json.loads(weather_raw)
+
+                            if "error" not in weather_data:
+                                cols = st.columns(4)
+                                cols[0].metric("📍 Location", str(weather_data.get("location", loc)))
+                                cols[1].metric("🌡️ Temp", f"{weather_data.get('temperature')} °C", f"Feels like {weather_data.get('feels_like')}°C")
+                                cols[2].metric("💧 Humidity", f"{weather_data.get('humidity')}%")
+                                cols[3].metric("💨 Wind", f"{weather_data.get('wind_speed')} m/s")
+
+                            st.session_state.messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "content": weather_raw
+                            })
+
+                    # Second Completion Call with tool response included
+                    second_response = client.chat.completions.create(
+                        messages=st.session_state.messages,
+                        model=selected_model,
+                        tools=tools,
+                        tool_choice="auto"
+                    )
+                    final_text = second_response.choices[0].message.content or ""
+                    st.markdown(final_text)
+                    st.session_state.messages.append({"role": "assistant", "content": final_text})
+
+                else:
+                    final_text = response_message.content or ""
+                    st.markdown(final_text)
+                    st.session_state.messages.append({"role": "assistant", "content": final_text})
+
+            except Exception as err:
+                st.error(f"Error communicating with Groq: {err}")
