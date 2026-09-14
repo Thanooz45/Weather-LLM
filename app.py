@@ -14,13 +14,10 @@ st.set_page_config(
 # --- Custom Styling (CSS) ---
 st.markdown("""
     <style>
-    /* Main container background & typography */
     .stApp {
         background: radial-gradient(circle at top left, #121826, #0b0f17);
         color: #e2e8f0;
     }
-
-    /* Custom Header card */
     .hero-container {
         padding: 1.5rem;
         background: linear-gradient(135deg, rgba(30, 41, 59, 0.7), rgba(15, 23, 42, 0.7));
@@ -29,7 +26,6 @@ st.markdown("""
         backdrop-filter: blur(12px);
         margin-bottom: 1.5rem;
     }
-    
     .hero-title {
         font-size: 2rem;
         font-weight: 700;
@@ -38,29 +34,15 @@ st.markdown("""
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
     }
-    
     .hero-subtitle {
         color: #94a3b8;
         font-size: 0.95rem;
         margin-top: 0.3rem;
     }
-
-    /* Weather stat badge */
-    .weather-card {
-        padding: 1rem 1.25rem;
-        background: rgba(30, 41, 59, 0.6);
-        border-radius: 12px;
-        border: 1px solid rgba(56, 189, 248, 0.25);
-        margin: 0.75rem 0;
-    }
-
-    /* Chat bubble polish */
     .stChatMessage {
         border-radius: 12px;
         margin-bottom: 0.8rem;
     }
-
-    /* Sidebar customization */
     section[data-testid="stSidebar"] {
         background-color: #0d131f;
         border-right: 1px solid rgba(255, 255, 255, 0.05);
@@ -140,6 +122,7 @@ with st.sidebar:
     for suggestion in prompt_suggestions:
         if st.button(suggestion, use_container_width=True):
             st.session_state.preset_prompt = suggestion
+            st.rerun()
 
     st.markdown("---")
     if st.button("🗑️ Clear Conversation", use_container_width=True):
@@ -160,17 +143,21 @@ if "messages" not in st.session_state:
 
 # --- Render Chat History ---
 for msg in st.session_state.messages:
-    if msg["role"] == "user":
+    role = msg.get("role") if isinstance(msg, dict) else getattr(msg, "role", None)
+    content = msg.get("content") if isinstance(msg, dict) else getattr(msg, "content", None)
+    
+    if role == "user" and content:
         with st.chat_message("user", avatar="👤"):
-            st.markdown(msg["content"])
-    elif msg["role"] == "assistant" and msg.get("content"):
+            st.markdown(content)
+    elif role == "assistant" and content:
         with st.chat_message("assistant", avatar="🌤️"):
-            st.markdown(msg["content"])
+            st.markdown(content)
 
 # --- Handle Incoming Queries ---
-active_input = st.chat_input("Ask about weather anywhere (e.g., 'Do I need an umbrella in Paris today?')")
+chat_val = st.chat_input("Ask about weather anywhere (e.g., 'Do I need an umbrella in Paris today?')")
+active_input = chat_val
 
-# Check if a preset button was clicked
+# Trigger if preset was selected
 if "preset_prompt" in st.session_state and st.session_state.preset_prompt:
     active_input = st.session_state.preset_prompt
     st.session_state.preset_prompt = None
@@ -194,7 +181,9 @@ if active_input:
 
             # 3. Tool execution branch
             if response_message.tool_calls:
-                st.session_state.messages.append(response_message)
+                # Convert Pydantic model to dict for safe serialization
+                msg_dict = response_message.model_dump()
+                st.session_state.messages.append(msg_dict)
 
                 for tool_call in response_message.tool_calls:
                     if tool_call.function.name == "get_weather":
@@ -204,7 +193,7 @@ if active_input:
                         weather_raw = get_weather(target_location)
                         weather_data = json.loads(weather_raw)
 
-                        # Display visual metric badges if the data fetch was successful
+                        # Render live stat metrics
                         if "error" not in weather_data:
                             cols = st.columns(4)
                             cols[0].metric("📍 Location", weather_data["location"])
@@ -212,7 +201,7 @@ if active_input:
                             cols[2].metric("💧 Humidity", f"{weather_data['humidity']}%")
                             cols[3].metric("💨 Wind", f"{weather_data['wind_speed']} m/s")
 
-                        # Pass raw json response directly back to the tool role
+                        # Append tool response
                         st.session_state.messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call.id,
