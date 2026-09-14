@@ -3,7 +3,6 @@ from groq import Groq
 import requests
 import json
 
-# --- Page Configuration ---
 st.set_page_config(
     page_title="SkyCast AI | Smart Weather Assistant",
     page_icon="🌤️",
@@ -11,7 +10,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- Custom Styling (CSS) ---
+# Custom Dark UI
 st.markdown("""
     <style>
     .stApp {
@@ -50,18 +49,18 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- Retrieve Keys Safely ---
+# Retrieve API Keys
 groq_api_key = str(st.secrets.get("GROQ_API_KEY", "")).strip()
 weather_api_key = str(st.secrets.get("WEATHER_API_KEY", "")).strip()
 
 if not groq_api_key or not weather_api_key:
-    st.error("Missing credentials: Make sure `GROQ_API_KEY` and `WEATHER_API_KEY` are defined under Streamlit Settings > Secrets.")
+    st.error("Missing keys: Please configure GROQ_API_KEY and WEATHER_API_KEY in Streamlit Secrets.")
     st.stop()
 
-# Initialize Groq Client
 client = Groq(api_key=groq_api_key)
+MODEL_ID = "openai/gpt-oss-120b"
 
-# --- Weather API Helper ---
+# Weather Tool Function
 def get_weather(location: str):
     url = f"https://api.openweathermap.org/data/2.5/weather?q={location}&units=metric&appid={weather_api_key}"
     try:
@@ -79,9 +78,9 @@ def get_weather(location: str):
         else:
             return json.dumps({"error": f"City '{location}' not found."})
     except Exception as e:
-        return json.dumps({"error": f"Connection error: {str(e)}"})
+        return json.dumps({"error": f"Connection failed: {str(e)}"})
 
-# --- Function Calling Tool Schema ---
+# Function Calling Definition
 tools = [
     {
         "type": "function",
@@ -93,7 +92,7 @@ tools = [
                 "properties": {
                     "location": {
                         "type": "string",
-                        "description": "The city name (e.g. Hyderabad, London, Tokyo)"
+                        "description": "The city name (e.g., Hyderabad, London, Tokyo)"
                     }
                 },
                 "required": ["location"]
@@ -102,49 +101,45 @@ tools = [
     }
 ]
 
-# --- Sidebar Controls ---
+# Sidebar
 with st.sidebar:
-    st.markdown("### ⚙️ Engine Settings")
-    selected_model = st.selectbox(
-        "Groq Model",
-        ["llama-3.3-70b-versatile", "llama-3.1-8b-instant"],
-        index=0
-    )
+    st.markdown("### ⚙️ Engine")
+    st.code(MODEL_ID, language="text")
 
     st.markdown("---")
     st.markdown("### ⚡ Quick Prompts")
-    prompt_suggestions = [
+    quick_queries = [
         "What's the weather in Tokyo right now?",
         "Is it raining in London?",
         "Compare weather between Paris and Mumbai",
         "Current temperature in Bengaluru"
     ]
 
-    for suggestion in prompt_suggestions:
-        if st.button(suggestion, use_container_width=True):
-            st.session_state.pending_prompt = suggestion
+    for q in quick_queries:
+        if st.button(q, use_container_width=True):
+            st.session_state.pending_prompt = q
             st.rerun()
 
     st.markdown("---")
     if st.button("🗑️ Clear Conversation", use_container_width=True):
-        st.session_state.messages = []
+        st.session_state.chat_history = []
         st.session_state.pending_prompt = None
         st.rerun()
 
-# --- Main Page Header ---
-st.markdown("""
+# Header
+st.markdown(f"""
     <div class="hero-container">
         <div class="hero-title">🌤️ SkyCast AI</div>
-        <div class="hero-subtitle">Real-time weather insights powered by OpenWeatherMap and Groq Function Calling</div>
+        <div class="hero-subtitle">Powered by {MODEL_ID} and OpenWeatherMap</div>
     </div>
 """, unsafe_allow_html=True)
 
-# --- Session State Setup ---
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+# State initialization
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
-# --- Render Chat History ---
-for msg in st.session_state.messages:
+# Display conversation
+for msg in st.session_state.chat_history:
     role = msg.get("role")
     content = msg.get("content")
     if role == "user" and content:
@@ -154,78 +149,90 @@ for msg in st.session_state.messages:
         with st.chat_message("assistant", avatar="🌤️"):
             st.markdown(content)
 
-# --- Input Handling ---
+# Prompt check
 chat_input = st.chat_input("Ask about weather anywhere...")
-prompt_to_process = None
+user_query = None
 
 if chat_input:
-    prompt_to_process = chat_input
+    user_query = chat_input
 elif "pending_prompt" in st.session_state and st.session_state.pending_prompt:
-    prompt_to_process = st.session_state.pending_prompt
+    user_query = st.session_state.pending_prompt
     st.session_state.pending_prompt = None
 
-if prompt_to_process:
-    st.session_state.messages.append({"role": "user", "content": prompt_to_process})
+if user_query:
+    st.session_state.chat_history.append({"role": "user", "content": user_query})
     with st.chat_message("user", avatar="👤"):
-        st.markdown(prompt_to_process)
+        st.markdown(user_query)
 
     with st.chat_message("assistant", avatar="🌤️"):
-        with st.spinner("Analyzing weather query..."):
+        with st.spinner(f"Querying {MODEL_ID}..."):
             try:
-                # First Completion Call
+                # 1. First model call
                 response = client.chat.completions.create(
-                    messages=st.session_state.messages,
-                    model=selected_model,
+                    messages=st.session_state.chat_history,
+                    model=MODEL_ID,
                     tools=tools,
                     tool_choice="auto"
                 )
-                response_message = response.choices[0].message
+                assistant_msg = response.choices[0].message
 
-                # Handle Tool Execution
-                if response_message.tool_calls:
-                    tool_calls_dict = [tc.model_dump() for tc in response_message.tool_calls]
-                    
-                    st.session_state.messages.append({
+                # 2. Check for tool execution
+                if assistant_msg.tool_calls:
+                    # Append assistant message with its tool calls
+                    st.session_state.chat_history.append({
                         "role": "assistant",
-                        "content": response_message.content or "",
-                        "tool_calls": tool_calls_dict
+                        "content": assistant_msg.content or "",
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments
+                                }
+                            }
+                            for tc in assistant_msg.tool_calls
+                        ]
                     })
 
-                    for tool_call in response_message.tool_calls:
-                        if tool_call.function.name == "get_weather":
-                            args = json.loads(tool_call.function.arguments)
+                    # Execute each tool
+                    for tc in assistant_msg.tool_calls:
+                        if tc.function.name == "get_weather":
+                            args = json.loads(tc.function.arguments)
                             loc = args.get("location", "")
-                            weather_raw = get_weather(loc)
-                            weather_data = json.loads(weather_raw)
+                            weather_json_str = get_weather(loc)
+                            weather_obj = json.loads(weather_json_str)
 
-                            if "error" not in weather_data:
+                            if "error" not in weather_obj:
                                 cols = st.columns(4)
-                                cols[0].metric("📍 Location", str(weather_data.get("location", loc)))
-                                cols[1].metric("🌡️ Temp", f"{weather_data.get('temperature')} °C", f"Feels like {weather_data.get('feels_like')}°C")
-                                cols[2].metric("💧 Humidity", f"{weather_data.get('humidity')}%")
-                                cols[3].metric("💨 Wind", f"{weather_data.get('wind_speed')} m/s")
+                                cols[0].metric("📍 Location", str(weather_obj.get("location", loc)))
+                                cols[1].metric("🌡️ Temp", f"{weather_obj.get('temperature')} °C", f"Feels like {weather_obj.get('feels_like')}°C")
+                                cols[2].metric("💧 Humidity", f"{weather_obj.get('humidity')}%")
+                                cols[3].metric("💨 Wind", f"{weather_obj.get('wind_speed')} m/s")
 
-                            st.session_state.messages.append({
+                            # Add tool output directly to messages
+                            st.session_state.chat_history.append({
                                 "role": "tool",
-                                "tool_call_id": tool_call.id,
-                                "content": weather_raw
+                                "tool_call_id": tc.id,
+                                "name": "get_weather",
+                                "content": weather_json_str
                             })
 
-                    # Second Completion Call with tool response included
+                    # 3. Second call to get final natural answer
                     second_response = client.chat.completions.create(
-                        messages=st.session_state.messages,
-                        model=selected_model,
+                        messages=st.session_state.chat_history,
+                        model=MODEL_ID,
                         tools=tools,
                         tool_choice="auto"
                     )
                     final_text = second_response.choices[0].message.content or ""
                     st.markdown(final_text)
-                    st.session_state.messages.append({"role": "assistant", "content": final_text})
+                    st.session_state.chat_history.append({"role": "assistant", "content": final_text})
 
                 else:
-                    final_text = response_message.content or ""
+                    final_text = assistant_msg.content or ""
                     st.markdown(final_text)
-                    st.session_state.messages.append({"role": "assistant", "content": final_text})
+                    st.session_state.chat_history.append({"role": "assistant", "content": final_text})
 
             except Exception as err:
-                st.error(f"Error communicating with Groq: {err}")
+                st.error(f"Groq API error: {err}")
